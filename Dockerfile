@@ -1,20 +1,16 @@
+# Read the doc: https://huggingface.co/docs/hub/spaces-sdks-docker
+# you will also find guides on how best to write your Dockerfile
+
 FROM python:3.9
 
-# Set the working directory
+RUN useradd -m -u 1000 user
+USER user
+ENV PATH="/home/user/.local/bin:$PATH"
+
 WORKDIR /app
 
-# Set an environment variable to redirect Hugging Face cache
-ENV HF_HOME=/app/huggingface_cache
+COPY --chown=user ./requirements.txt requirements.txt
+RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
-# Copy requirements and install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy the FastAPI application code
-COPY . .
-
-# Expose port 8000 for FastAPI
-EXPOSE 8000
-
-# Command to run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+COPY --chown=user . /app
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
