@@ -8,3 +8,4 @@ numpy
 pinecone
 python-jose[cryptography]
 python-multipart
+jose
