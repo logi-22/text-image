@@ -1,116 +1,97 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from pydantic import BaseModel
+import torch
+import pinecone
+import requests
+from PIL import Image
+from io import BytesIO
 from transformers import AutoProcessor, CLIPModel
-from PIL import Image, UnidentifiedImageError
 import numpy as np
-import io
-import os
-import logging
-from pinecone import Pinecone
 
-# Initialize FastAPI
-app = FastAPI()
+# ✅ Initialize FastAPI
+app = FastAPI(title="Image & Text Search API", version="1.0")
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
-
-# Set environment variables to avoid permission issues
-os.environ["TRANSFORMERS_CACHE"] = "/app/.cache"
-os.environ["HF_HOME"] = "/app/.cache"
-
-# Load CLIP model and processor
-try:
-    model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-    processor = AutoProcessor.from_pretrained("openai/clip-vit-base-patch32")
-except Exception as e:
-    logger.error(f"Error loading CLIP model: {e}")
-    raise RuntimeError("Failed to load CLIP model.")
-
-# Initialize Pinecone
-PINECONE_API_KEY = "pcsk_6QAd2e_Js1mL941ky9vvGhkGpsGmR7H8aDjKWp2vzpMiRDSvFEFGf5VT6meRJeAft1pNaE"  # Use environment variable
+# ✅ Initialize Pinecone
+PINECONE_API_KEY = "pcsk_5W2aRh_QXKhMXdMUC7NVXWPXgpcT6J7cxhpvshc7MYWoPAqpRA8vmwes2Bx2xVnqYXeqme"  # Replace with your API key
 INDEX_NAME = "images-index"
 
-if not PINECONE_API_KEY:
-    raise RuntimeError("Pinecone API key not set. Please configure it as an environment variable.")
+pc = pinecone.Pinecone(api_key=PINECONE_API_KEY)
+unsplash_index = pc.Index(INDEX_NAME)
 
-try:
-    pc = Pinecone(api_key=PINECONE_API_KEY)
-    if INDEX_NAME not in pc.list_indexes().names():
-        raise RuntimeError(f"Pinecone index '{INDEX_NAME}' not found.")
-    unsplash_index = pc.Index(INDEX_NAME)
-except Exception as e:
-    logger.error(f"Error initializing Pinecone: {e}")
-    raise RuntimeError("Failed to initialize Pinecone.")
+# ✅ Load CLIP Model & Processor
+model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+processor = AutoProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
-# Helper functions for embeddings
-def embed_text(text: str):
-    try:
-        inputs = processor(text=text, return_tensors="pt")
+# ✅ Function to Generate Embedding from Text
+def get_text_embedding(text: str):
+    inputs = processor(text=[text], return_tensors="pt", padding=True, truncation=True)
+    with torch.no_grad():
         text_features = model.get_text_features(**inputs)
-        return text_features.detach().cpu().numpy().flatten().tolist()
-    except Exception as e:
-        logger.error(f"Error embedding text: {e}")
-        raise HTTPException(status_code=500, detail="Error processing text embedding.")
+    return text_features.detach().cpu().numpy().flatten().tolist()
 
-def embed_image(image: Image.Image):
-    try:
-        inputs = processor(images=image, return_tensors="pt")
+# ✅ Function to Generate Embedding from Image
+def get_image_embedding(image: Image.Image):
+    inputs = processor(images=image, return_tensors="pt")
+    with torch.no_grad():
         image_features = model.get_image_features(**inputs)
-        return image_features.detach().cpu().numpy().flatten().tolist()
-    except Exception as e:
-        logger.error(f"Error embedding image: {e}")
-        raise HTTPException(status_code=500, detail="Error processing image embedding.")
+    return image_features.detach().cpu().numpy().flatten().tolist()
 
-@app.post("/embed_text")
-async def search_by_text(query: str = Form(...)):
-    if not query.strip():
-        raise HTTPException(status_code=400, detail="Query text cannot be empty.")
+# ✅ Function to Search Pinecone for Similar Images
+def search_similar_images(embedding, top_k=10):
+    results = unsplash_index.query(
+        vector=embedding,
+        top_k=top_k,
+        include_metadata=True,
+        namespace="image-search-dataset"
+    )
+    return results.get("matches", [])
 
-    query_embedding = embed_text(query)
+# ✅ API Endpoint: Text-to-Image Search
+class TextSearchRequest(BaseModel):
+    query: str
 
-    try:
-        search_results = unsplash_index.query(
-            vector=query_embedding,
-            top_k=10,
-            include_metadata=True,
-            namespace="image-search-dataset"
-        )
-    except Exception as e:
-        logger.error(f"Error querying Pinecone: {e}")
-        raise HTTPException(status_code=500, detail="Error querying Pinecone.")
+@app.post("/search/text")
+async def search_by_text(request: TextSearchRequest):
+    embedding = get_text_embedding(request.query)
+    matches = search_similar_images(embedding, top_k=10)
+    
+    if not matches:
+        raise HTTPException(status_code=404, detail="No matching images found.")
+    
+    return {"query": request.query, "results": matches}
 
-    if not search_results or not search_results.get("matches"):
-        return JSONResponse(content={"message": "No matches found"}, status_code=404)
-
-    return {"results": search_results["matches"]}
-
-@app.post("/embed_image")
+# ✅ API Endpoint: Image-to-Image Search
+@app.post("/search/image")
 async def search_by_image(file: UploadFile = File(...)):
-    try:
-        image = Image.open(io.BytesIO(await file.read()))
-        image = image.convert("RGB")  # Ensure image is in RGB format
-    except UnidentifiedImageError:
-        raise HTTPException(status_code=400, detail="Invalid image file.")
+    # Read image file
+    image = Image.open(BytesIO(await file.read())).convert("RGB")
+    embedding = get_image_embedding(image)
+    matches = search_similar_images(embedding, top_k=10)
+    
+    if not matches:
+        raise HTTPException(status_code=404, detail="No similar images found.")
+    
+    return {"filename": file.filename, "results": matches}
 
-    query_embedding = embed_image(image)
-
+# ✅ API Endpoint: Upload Image to Store in Pinecone
+@app.post("/store/image")
+async def store_image(file: UploadFile = File(...)):
     try:
-        search_results = unsplash_index.query(
-            vector=query_embedding,
-            top_k=10,
-            include_metadata=True,
-            namespace="image-search-dataset"
-        )
+        # Read image file
+        image = Image.open(BytesIO(await file.read())).convert("RGB")
+        embedding = get_image_embedding(image)
+
+        # Generate a unique ID (use filename or hash)
+        image_id = file.filename
+
+        # Store embedding in Pinecone
+        unsplash_index.upsert([(image_id, embedding, {"filename": image_id})])
+
+        return {"message": f"Image {image_id} stored successfully!"}
     except Exception as e:
-        logger.error(f"Error querying Pinecone: {e}")
-        raise HTTPException(status_code=500, detail="Error querying Pinecone.")
+        raise HTTPException(status_code=500, detail=f"Error processing image: {str(e)}")
 
-    if not search_results or not search_results.get("matches"):
-        return JSONResponse(content={"message": "No matches found"}, status_code=404)
-
-    return {"results": search_results["matches"]}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+# ✅ Health Check Endpoint
+@app.get("/")
+async def health_check():
+    return {"message": "API is running!"}
