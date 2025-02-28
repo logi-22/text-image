@@ -3,6 +3,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from pinecone import Pinecone
 import os
+from dotenv import load_dotenv
 from PIL import Image
 import io
 from transformers import AutoProcessor, CLIPModel
@@ -10,6 +11,7 @@ import numpy as np
 from datetime import datetime, timedelta
 
 # Load environment variables
+load_dotenv()
 
 # Secret key for JWT
 ALGORITHM = "HS256"
@@ -26,8 +28,13 @@ fake_users_db = {
 # Initialize FastAPI
 app = FastAPI()
 
+# Load Pinecone API key
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+if not PINECONE_API_KEY:
+    raise RuntimeError("PINECONE_API_KEY is not set. Please set it in the environment or .env file.")
+
 # Initialize Pinecone
-pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
+pc = Pinecone(api_key=PINECONE_API_KEY)
 index_name = "images-index"
 unsplash_index = pc.Index(index_name)
 
@@ -42,7 +49,7 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
     to_encode = data.copy()
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, algorithm=ALGORITHM)
+    return jwt.encode(to_encode, "secret", algorithm=ALGORITHM)
 
 def authenticate_user(username: str, password: str):
     user = fake_users_db.get(username)
@@ -52,7 +59,7 @@ def authenticate_user(username: str, password: str):
 
 def get_current_user(token: str = Depends(oauth2_scheme)):
     try:
-        payload = jwt.decode(token, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, "secret", algorithms=[ALGORITHM])
         username: str = payload.get("sub")
         if username is None or username not in fake_users_db:
             raise HTTPException(status_code=401, detail="Invalid authentication")

@@ -6,8 +6,5 @@ transformers
 torch
 numpy
 pinecone
-pyjwt
-passlib[bcrypt]
-python-multipart
 python-jose[cryptography]
-
+python-multipart
