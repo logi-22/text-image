@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Header
 from pinecone import Pinecone
 from dotenv import load_dotenv
 import os
@@ -12,6 +12,9 @@ app = FastAPI()
 # Load environment variables
 load_dotenv()
 
+# API Key for Authentication
+API_KEY = os.environ.get("API_KEY", "pcsk_5W2aRh_QXKhMXdMUC7NVXWPXgpcT6J7cxhpvshc7MYWoPAqpRA8vmwes2Bx2xVnqYXeqme")  # Set in .env file
+
 # Initialize Pinecone
 pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
 index_name = "images-index"
@@ -20,6 +23,11 @@ unsplash_index = pc.Index(index_name)
 # Load CLIP model and processor
 model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
 processor = AutoProcessor.from_pretrained("openai/clip-vit-base-patch32")
+
+# Authentication Dependency
+def authenticate(api_key: str = Header(None)):
+    if api_key != API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API Key")
 
 # Function to generate embedding from text
 def get_text_embedding(text: str):
@@ -46,7 +54,7 @@ def search_similar_images(embedding: list, top_k: int = 10):
     return results["matches"]
 
 @app.get("/search/text/")
-async def search_by_text(query: str):
+async def search_by_text(query: str, api_key: str = Depends(authenticate)):
     if not query:
         raise HTTPException(status_code=400, detail="Query text is required")
     embedding = get_text_embedding(query)
@@ -54,7 +62,7 @@ async def search_by_text(query: str):
     return {"matches": [{"id": m["id"], "score": m["score"], "url": m["metadata"]["url"]} for m in matches]}
 
 @app.post("/search/image/")
-async def search_by_image(file: UploadFile = File(...)):
+async def search_by_image(file: UploadFile = File(...), api_key: str = Depends(authenticate)):
     try:
         image_data = await file.read()
         image = Image.open(io.BytesIO(image_data)).convert("RGB")
