@@ -1,67 +1,69 @@
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, Form
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi import FastAPI, File, UploadFile, HTTPException
+from pinecone import Pinecone
+from dotenv import load_dotenv
+import os
 from PIL import Image
 import io
-import numpy as np
 from transformers import AutoProcessor, CLIPModel
-from pinecone import Pinecone
-import logging
+import numpy as np
 
 app = FastAPI()
-security = HTTPBasic()
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
+# Load environment variables
+load_dotenv()
 
-# Dummy credentials (Replace with a proper authentication system)
-CREDENTIALS = {"admin": "password123"}
+# Initialize Pinecone
+pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
+index_name = "images-index"
+unsplash_index = pc.Index(index_name)
 
 # Load CLIP model and processor
 model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
 processor = AutoProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
-# Initialize Pinecone
-pc = Pinecone(api_key="pcsk_6QAd2e_Js1mL941ky9vvGhkGpsGmR7H8aDjKWp2vzpMiRDSvFEFGf5VT6meRJeAft1pNaE")
-index_name = "images-index"
-
-# Ensure Pinecone index exists
-index_list = pc.list_indexes().names()
-if index_name not in index_list:
-    raise RuntimeError(f"Index '{index_name}' not found. Make sure it is created.")
-
-# Initialize Pinecone index
-unsplash_index = pc.Index(index_name)
-
-def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
-    if credentials.username in CREDENTIALS and CREDENTIALS[credentials.username] == credentials.password:
-        return credentials.username
-    raise HTTPException(status_code=401, detail="Invalid username or password")
-
-def embed_text(text: str):
-    inputs = processor(text=text, return_tensors="pt")
+# Function to generate embedding from text
+def get_text_embedding(text: str):
+    inputs = processor(text=[text], return_tensors="pt", padding=True, truncation=True)
     text_features = model.get_text_features(**inputs)
-    return text_features.detach().cpu().numpy().flatten().tolist()
+    embedding = text_features.detach().cpu().numpy().flatten().tolist()
+    return embedding
 
-def embed_image(image: Image.Image):
+# Function to generate embedding from image
+def get_image_embedding(image: Image.Image):
     inputs = processor(images=image, return_tensors="pt")
     image_features = model.get_image_features(**inputs)
-    return image_features.detach().cpu().numpy().flatten().tolist()
+    embedding = image_features.detach().cpu().numpy().flatten().tolist()
+    return embedding
 
-@app.post("/embed_text/")
-def embed_text_api(text: str = Form(...), username: str = Depends(authenticate)):
-    embedding = embed_text(text)
-    return {"embedding": embedding}
-
-@app.post("/embed_image/")
-def embed_image_api(file: UploadFile, username: str = Depends(authenticate)):
-    image = Image.open(io.BytesIO(file.file.read()))
-    embedding = embed_image(image)
-    return {"embedding": embedding}
-
-@app.post("/search/")
-def search(query_embedding: list, username: str = Depends(authenticate)):
-    search_results = unsplash_index.query(
-        vector=query_embedding, top_k=10, include_metadata=True, namespace="image-search-dataset"
+# Function to query Pinecone and fetch similar images
+def search_similar_images(embedding: list, top_k: int = 10):
+    results = unsplash_index.query(
+        vector=embedding,
+        top_k=top_k,
+        include_metadata=True,
+        namespace="image-search-dataset"
     )
-    return {"results": search_results.get("matches", [])}
+    return results["matches"]
+
+@app.get("/search/text/")
+async def search_by_text(query: str):
+    if not query:
+        raise HTTPException(status_code=400, detail="Query text is required")
+    embedding = get_text_embedding(query)
+    matches = search_similar_images(embedding)
+    return {"matches": [{"id": m["id"], "score": m["score"], "url": m["metadata"]["url"]} for m in matches]}
+
+@app.post("/search/image/")
+async def search_by_image(file: UploadFile = File(...)):
+    try:
+        image_data = await file.read()
+        image = Image.open(io.BytesIO(image_data)).convert("RGB")
+        embedding = get_image_embedding(image)
+        matches = search_similar_images(embedding)
+        return {"matches": [{"id": m["id"], "score": m["score"], "url": m["metadata"]["url"]} for m in matches]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing image: {str(e)}")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
