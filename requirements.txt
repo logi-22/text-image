@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+pillow
+torch
+transformers
+numpy
+pinecone-client
