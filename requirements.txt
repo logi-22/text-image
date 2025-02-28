@@ -3,7 +3,5 @@ uvicorn
 pillow
 torch
 transformers
-numpy
 pinecone
-python-multipart
-
+numpy
