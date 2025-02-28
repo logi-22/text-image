@@ -13,7 +13,7 @@ import os
 app = FastAPI(title="Image & Text Search API", version="1.0")
 
 # ✅ Initialize Pinecone Properly
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "your-api-key")  # Replace with actual API key
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "pcsk_5W2aRh_QXKhMXdMUC7NVXWPXgpcT6J7cxhpvshc7MYWoPAqpRA8vmwes2Bx2xVnqYXeqme")  # Replace with actual API key
 INDEX_NAME = "images-index"
 
 pc = pinecone.Pinecone(api_key=PINECONE_API_KEY)
