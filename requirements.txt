@@ -5,7 +5,7 @@ pillow
 transformers
 torch
 numpy
-pinecone
+pinecone-client
 python-jose[cryptography]
 python-multipart
 jose
